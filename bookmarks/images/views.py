@@ -1,0 +1,224 @@
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from .forms import ImageCreateForm
+from .models import Image
+from django.http import JsonResponse, HttpResponse
+from django.views.decorators.http import require_POST
+from django.core.paginator import PageNotAnInteger, Paginator, EmptyPage
+from actions.utils import create_action
+import redis 
+from django.conf import settings
+import requests
+import base64
+
+# Create your views here.
+
+
+
+@login_required
+def create_img(request):
+    if request.method == 'POST':
+        form = ImageCreateForm(data=request.POST)
+        if form.is_valid():
+            # form data is valid
+            cd = form.cleaned_data
+            new_image = form.save(commit=False)
+            # assign current user to the item
+            new_image.user = request.user
+            new_image.save()
+            # create new action to diaplay it 
+            create_action(request.user, 'bookmarked image', new_image)
+            messages.success(request, 'Image added successfully')
+            # redirect to new created image detail view
+            return redirect(new_image.get_absolute_url())
+    else:
+        form = ImageCreateForm(data=request.GET)
+    
+    return render(request,
+                  'images/image/create.html',
+                  {'section':'images',
+                   'form' : form})
+    
+    
+
+    
+
+
+
+
+@login_required
+@require_POST
+def image_like(request):
+    image_id = request.POST.get('id')
+    action = request.POST.get('action')
+    if image_id and action:
+        try:
+            image = Image.objects.get(id=image_id)
+            if action == 'like':
+                image.users_like.add(request.user)
+                create_action(request.user, 'likes', image)
+            else:
+                image.users_like.remove(request.user)
+            return JsonResponse({'status': 'ok'})
+        except Image.DoesNotExist:
+            pass
+    return JsonResponse({'status': 'error'})
+
+
+@login_required
+def image_list(request):
+    # retrive all objects
+    images = Image.objects.all()
+    # just 8 images in every page
+    paginator = Paginator(images, 8)
+    # get num of page from url page=...
+    page = request.GET.get('page')
+    '''
+        The images_only HTTP GET parameter is retrieved to
+        know if the whole page has to be rendered or only the new images.
+    '''
+    images_only = request.GET.get('images_only')
+    try:
+        # to fetch specified page
+        images = paginator.page(page)
+    except PageNotAnInteger:
+        # if num of page in url not int return first page
+        images = paginator.page(1)
+    except EmptyPage:
+        '''
+        if scroll and no new pages(images)
+        return response empty page and 
+        make page appear the last images in last page
+        '''
+        if images_only:
+            return HttpResponse('')
+        images = paginator.page(paginator.num_pages)
+    if images_only:
+        '''
+        list_images.html will be part of list.html
+        '''
+        return render(request,
+               'images/image/list_images.html',
+               {'section' : images, 
+                'images' : images})
+    return  render(request,
+               'images/image/list.html',
+               {'section' : images, 
+                'images' : images})
+    
+    
+    
+# @login_required
+# def image_list(request):
+#     images = Image.objects.all()
+#     paginator = Paginator(images, 8)
+#     page = request.GET.get('page')
+#     images_only = request.GET.get('images_only')
+#     try:
+#         images = paginator.page(page)
+#     except PageNotAnInteger:
+#         # If page is not an integer deliver the first page
+#         images = paginator.page(1)
+#     except EmptyPage:
+#         if images_only:
+#             # If AJAX request and page out of range
+#             # return an empty page
+#             return HttpResponse('')
+#             # If page out of range return last page of results
+#         images = paginator.page(paginator.num_pages)
+#     if images_only:
+#         return render(request,
+#                     'images/image/list_images.html',
+#                     {'section': 'images',
+#                     'images': images})
+#     return render(request,
+#                 'images/image/list.html',
+#                 {'section': 'images',
+#                 'images': images})
+
+r = redis.Redis(host=settings.REDIS_HOST,
+                    port=settings.REDIS_PORT,
+                    db=settings.REDIS_DB)
+@login_required
+def image_detail(request, id, slug):
+    # get img from db
+    image = get_object_or_404(Image, id=id, slug=slug)
+    # every time anyone send req incr 1 
+    total_views = r.incr(f'image:{image.id}:views')
+    # incr 1 but put in sorted set
+    r.zincrby('image_ranking', 1, image.id)
+    return  render(request,
+            'images/image/detail.html',
+        {
+            'section':'images',
+            'image':image,
+            'total_views':total_views
+        }
+    )
+
+@login_required
+def image_ranking(request):
+    # get images from sorted set
+    images_ranking = r.zrange('image_ranking', 0, -1)
+    images_ids = [int(id) for id in images_ranking]
+    # get most viewed from data_base
+    most_viewed = list(Image.objects.filter(id__in=images_ids))
+    # sort most viewed
+    most_viewed.sort(key=lambda x : images_ids.index(x.id))
+
+    return render(
+        request,
+        'images/image/ranking.html',
+        {
+            'section':'images',
+            'most_viewed':most_viewed
+        }
+    )
+
+
+
+
+
+
+# def image_detail(request, id, slug):
+#     # Check if the image is in cache
+#     cache_key = f'image:{id}:{slug}'
+#     image = r.get(cache_key)
+
+#     if image:
+#         # Convert the binary image data to a base64-encoded string
+#         image = base64.b64encode(image).decode('utf-8')
+#         return render(request,
+#                       'images/image/detail.html',
+#                       {'section': 'images',
+#                        'image': image})
+    
+#     # If not found in cache, retrieve it from the database
+#     image = get_object_or_404(Image, id=id, slug=slug)
+    
+#     # Fetch the image from the URL
+#     response = requests.get(image.url)
+
+#     if response.status_code == 200:
+#         image = response.content
+
+#         # Cache the image in Redis
+#         r.set(cache_key, image)
+
+#         # Convert the binary image data to a base64-encoded string
+#         image = base64.b64encode(image).decode('utf-8')
+
+#     return render(request,
+#                       'images/image/detail.html',
+#                       {'section': 'images',
+#                        'image': image})
+
+
+
+def image_detail(request, id, slug):
+    image = get_object_or_404(Image, id=id, slug=slug)
+    return render(request,
+                'images/image/detail.html',
+                {'section': 'images',
+                'image': image})

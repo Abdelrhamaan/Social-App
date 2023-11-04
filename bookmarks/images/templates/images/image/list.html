@@ -1,0 +1,37 @@
+{% extends "base.html" %} {% block title %}Images bookmarked{% endblock %}
+<!-- prettier-ignore-->
+{%block content %}
+<h1>Images bookmarked</h1>
+<a href="{% url 'images:ranking' %}"><h3>See Most Viewed Images</h3></a>
+<div id="image-list">{% include "images/image/list_images.html" %}</div>
+{% endblock %} {% block domready %}
+<!-- prettier-ignore-->
+var page = 1; 
+var emptyPage = false; 
+var blockReq = false;
+<!-- prettier-ignore-->
+window.addEventListener('scroll', function(e){
+        var margin = document.body.clientHeight - window.innerHeight - 200;
+        if (window.pageYOffset > margin && !emptyPage && !blockReq){
+            blockReq = true;
+            page += 1;
+
+<!-- prettier-ignore-->
+fetch('?images_only=1&page=' + page)
+        .then(res => res.text())
+        .then(html => {
+        if(html === ''){
+            emptyPage = true;}
+        else{
+            var imageList = document.getElementById('image-list');
+            imageList.insertAdjacentHTML('beforeEnd', html);
+            blockReq = true;
+        }
+    })
+    }});
+
+<!-- launch scroll event -->
+<!-- prettier-ignore-->
+var scroll = new Event('scroll');
+window.dispatchEvent(scroll); 
+{% endblock %}
